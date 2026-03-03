@@ -1,0 +1,249 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang
+  # namespace: llmops-assets
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-head
+            image: harbor.transwarp.io/aip/sglang:v0.5.4
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: NCCL_DEBUG
+                value: "INFO"
+              - name: CUDA_DISABLE_CONTROL
+                value: "true"
+              - name: UNBALANCED_MODEL_LOADING_TIMEOUT_S
+                value: "36000"
+              - name: USE_VLLM
+                value: "1"
+              - name: BASE_MODEL
+                value: /models/DeepSeek-V3.2-Exp
+              - name: ENABLE_EP
+                value: "1"
+              - name: ENABLE_DP
+                value: "0"
+              # - name: MEM_FRACTION_STATIC
+              #   value: "0.88"
+              # - name: "EXTRA_CMD"
+              #   value: "--dist-timeout 7200 --watchdog-timeout 36000  --cuda-graph-max-bs 16 --torch-compile-max-bs 8  --attention-backend fa3  --context-length 163840  --max-running-requests 128 --mem-fraction-static 0.78"
+            workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            # - sleep 36000
+            # args:
+            # - |
+            #   python3 -m sglang.launch_server \
+            #   --model /models/DeepSeek-V3.2-Exp  \
+            #   --dist-init-addr $LWS_LEADER_ADDRESS:20000 \
+            #   --tensor-parallel-size 16 \
+            #   --nnodes $LWS_GROUP_SIZE  \
+            #   --node-rank $LWS_WORKER_INDEX \
+            #   --trust-remote-code \
+            #   --host 0.0.0.0 \
+            #   --port 8000 \
+            #   --dist-timeout 7200 \
+            #   --enable-metrics \
+            #   --expert-parallel-size 16 \
+            #   --log-requests --log-requests-leve 1
+            # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+            # 'python3 -m sglang.launch_server --model-path /models/Qwen/Qwen3-30B-A3B/ --tp 2 --dist-init-addr $LWS_LEADER_ADDRESS:20000 --nnodes $LWS_GROUP_SIZE --node-rank 0 --trust-remote-code --context-length 32768 --mem-fraction-static 0.9 --enable-metrics --host 0.0.0.0 --port 8080 --watchdog-timeout 600'
+            - /bin/boot.sh
+            ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+            - containerPort: 20000
+              name: distributed
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+                rdma/hca_shared_devices_a: 1
+                memory: 50Gi
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "8"
+                rdma/hca_shared_devices_a: 1
+                cpu: 15
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+            - mountPath: /models/deepseek
+              name: models
+            - mountPath: /dev/shm
+              name: shared-mem
+            # readinessProbe:
+            #   tcpSocket:
+            #     port: 8080
+            #   initialDelaySeconds: 15
+            #   periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              - name: boot-script
+                mountPath: /bin/boot.sh
+                # subPath: boot.sh
+                readOnly: true
+              - name: executor-volume
+                mountPath: /opt/tritonserver/executor   
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          hostPath:
+            path: /mnt/disk2/models   # 请替换为你的本地目录，例如 /home/yourname/project
+            type: Directory
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/boot.sh
+            type: File
+        - name: executor-volume
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup
+            type: Directory
+    workerTemplate:
+      metadata:
+        # annotations:
+        #   nvidia.com/use-gpuuuid: "GPU-0f95da43-eab5-e7f3-252e-39f9353f7bb2"
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev39
+        containers:
+          - name: sglang-worker
+            image: harbor.transwarp.io/aip/sglang:v0.5.4
+            imagePullPolicy: IfNotPresent
+            workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            # - sleep 36000
+            - /bin/boot.sh
+            # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+            # args:
+            # - |
+            #   python3 -m sglang.launch_server \
+            #   --model /models/DeepSeek-V3.2-Exp  \
+            #   --dist-init-addr $LWS_LEADER_ADDRESS:20000 \
+            #   --tensor-parallel-size 16 \
+            #   --nnodes $LWS_GROUP_SIZE  \
+            #   --node-rank $LWS_WORKER_INDEX \
+            #   --trust-remote-code \
+            #   --host 0.0.0.0 \
+            #   --port 8000 \
+            #   --dist-timeout 7200 \
+            #   --log-requests --log-requests-leve 1 \
+            #   --enable-metrics \
+            #   --expert-parallel-size 16
+            env:
+              - name: CUDA_DISABLE_CONTROL
+                value: "true"
+              - name: UNBALANCED_MODEL_LOADING_TIMEOUT_S
+                value: "36000"
+              - name: USE_VLLM
+                value: "1"
+              - name: BASE_MODEL
+                value: /models/DeepSeek-V3.2-Exp
+              - name: ENABLE_EP
+                value: "1"
+              - name: ENABLE_DP
+                value: "0"
+              # - name: MEM_FRACTION_STATIC
+              #   value: "0.88"
+              # - name: "EXTRA_CMD"
+              #   value: "--dist-timeout 7200 --watchdog-timeout 36000  --cuda-graph-max-bs 16 --torch-compile-max-bs 8  --attention-backend fa3  --context-length 163840  --max-running-requests 128 --mem-fraction-static 0.78"
+            ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "8"
+                rdma/hca_shared_devices_a: 1
+                memory: 50Gi
+                # cpu: 5
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "8"
+                rdma/hca_shared_devices_a: 1
+                cpu: 15
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              - name: boot-script
+                mountPath: /bin/boot.sh
+                # subPath: boot.sh
+                readOnly: true
+              - name: executor-volume
+                mountPath: /opt/tritonserver/executor   
+        # dnsPolicy: ClusterFirst
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          hostPath:
+            path: /mnt/disk2/models   # 请替换为你的本地目录，例如 /home/yourname/project
+            type: Directory
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk2/repo/llm_startup/boot.sh
+            type: File
+        - name: executor-volume
+          hostPath:
+            path: /mnt/disk2/repo/llm_startup
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-leader
+spec:
+  type: NodePort
+  selector:
+    leaderworkerset.sigs.k8s.io/name: sglang
+    role: leader
+  ports:
+  - name: serving
+    port: 8000
+    targetPort: 8000
+    nodePort: 30566
+  - name: metrics
+    port: 8080
+    targetPort: 8080

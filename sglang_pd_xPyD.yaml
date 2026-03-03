@@ -1,0 +1,481 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-prefill
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-decode
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 2 --host 0.0.0.0 --disaggregation-mode prefill --port 30000  --served-model-name atom --nnodes 2 --node-rank 0 --dist-init-addr $(LWS_LEADER_ADDRESS):20102 --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-prefill
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: NCCL_DEBUG
+                value: INFO
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 2 --host 0.0.0.0 --disaggregation-mode prefill --port 30000  --served-model-name atom --nnodes 2 --node-rank 1 --dist-init-addr $(LWS_LEADER_ADDRESS):20102 --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-sglang-prefill
+spec:
+  ports:
+    - name: http
+      port: 30000
+      protocol: TCP
+      targetPort: 30000
+    - name: bootstrap
+      port: 8998
+      protocol: TCP
+      targetPort: 8998
+  selector:
+    leaderworkerset.sigs.k8s.io/name: sglang-prefill
+    role: leader
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-prefill2
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 1
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-prefill
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            env:
+              - name: NCCL_DEBUG
+                value: INFO
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 1 --host 0.0.0.0 --disaggregation-mode prefill --port 30000  --served-model-name atom --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-decode
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-decode
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 2 --host 0.0.0.0 --disaggregation-mode decode --port 30000  --served-model-name atom --nnodes 2 --node-rank 0 --dist-init-addr $(LWS_LEADER_ADDRESS):20102 --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-decode
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 2 --host 0.0.0.0 --disaggregation-mode decode --port 30000  --served-model-name atom --nnodes 2 --node-rank 1 --dist-init-addr $(LWS_LEADER_ADDRESS):20102 --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+
+# 对于跨节点部署的prefill和decode,加上svc保证请求被路由到leader节点
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-sglang-decode
+spec:
+  ports:
+    - port: 30000
+      protocol: TCP
+      targetPort: 30000
+  selector:
+    leaderworkerset.sigs.k8s.io/name: sglang-decode
+    role: leader
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-decode2
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 1
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: sglang-decode
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 1 --host 0.0.0.0 --disaggregation-mode decode --port 30000  --served-model-name atom --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lb-main
+  labels:
+    app: lb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lb
+  template:
+    metadata:
+      labels:
+        app: lb
+    spec:
+      containers:
+        - name: sgl-minilb
+          image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+          command:
+          - python
+          - -m
+          - sglang_router.launch_router 
+          - --pd-disaggregation
+          - --prefill
+          - http://sglang-prefill2:30000
+          - --prefill
+          - http://svc-sglang-prefill:30000
+          - --decode
+          - http://svc-sglang-decode:30000
+          - --decode
+          - http://sglang-decode2:30000
+          - --host
+          - 0.0.0.0
+          - --port
+          -  "8000"
+          ports:
+            - containerPort: 8000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lb-service
+spec:
+  type: NodePort # NodePort is easy to test, you can also specify `ClusterIP`
+  selector:
+    app: lb
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000         # Service Port（In-Cluster）
+      targetPort: 8000   # Exposed Container
+      nodePort: 30800
+    - name: metrics
+      protocol: TCP
+      port: 29000
+      targetPort: 29000
+      nodePort: 30801
+

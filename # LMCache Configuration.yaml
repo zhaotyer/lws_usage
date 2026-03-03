@@ -1,0 +1,23 @@
+# LMCache Configuration
+local_cpu: False
+remote_url: "mooncakestore://mooncake-master:50051/"
+max_local_cpu_size: 2  # small local buffer
+numa_mode: "auto"      # reduce tail latency with multi-NUMA/multi-NIC
+pre_caching_hash_algorithm: sha256_cbor_64bit
+
+# Mooncake Configuration (via extra_config)
+extra_config:
+  use_exists_sync: true
+  save_chunk_meta: False  # Enable chunk metadata optimization
+  local_hostname: "10.224.0.167"
+  metadata_server: "http://mooncake-master:8080/metadata"
+  protocol: "rdma"
+  device_name: ""        # leave empty; autodetect device(s)
+  global_segment_size: 10737418240   # 20 GiB per worker
+  master_server_address: "mooncake-master:50051"
+  local_buffer_size: 0    # rely on LMCache local_cpu as the buffer
+  mooncake_prefer_local_alloc: true  # prefer local segment if available
+
+
+
+  LMCACHE_CONFIG_FILE=mooncake-config.yaml vllm serve /models/Qwen/Qwen2.5-7B-Instruct/ --served-model-name atom --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1", "kv_role":"kv_both"}'

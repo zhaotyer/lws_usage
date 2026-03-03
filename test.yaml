@@ -1,0 +1,69 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-decode2
+spec:
+  replicas: 1 # The number of pods.
+  startupPolicy: LeaderCreated
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxSurge: 0
+      maxUnavailable: 2 # Enable the MaxUnavailableStatefulSet feature gate.
+  leaderWorkerTemplate:
+    size: 3
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      # metadata:
+      #   labels:
+      #     role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev39
+        containers:
+          - name: sglang-decode
+            image: harbor.transwarp.io/aip-amd/xpu-nvidia/sglang:v0.5.6
+            imagePullPolicy: IfNotPresent
+            # workingDir: /sgl-workspace
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              # In the command below, set NCCL_IB_GID_INDEX=3 only for H20 GPU. H100 GPU does not require this configuration.
+              python3 -m sglang.launch_server --model-path /models/Qwen/Qwen2.5-7B-Instruct/ --tp 1 --host 0.0.0.0 --disaggregation-mode decode --port 30000  --served-model-name atom --enable-metrics
+            ports:
+            - containerPort: 30000
+              name: http
+              protocol: TCP
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+              requests:
+                nvidia.com/gpu: "1"
+                rdma/hca_shared_devices_a: 1
+                #vke.volcengine.com/infiniband-rdma: "8"  # Use this parameter for H100's InfiniBand RDMA.
+            securityContext:
+              capabilities:
+                add:
+                - IPC_LOCK
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false

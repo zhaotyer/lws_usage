@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-test
+  labels:
+    app: vllm-test
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: dev17
+  # hostNetwork: true
+  containers:
+    - name: vllm-test
+      image: harbor.transwarp.io/aip-amd/xpu-nvidia/vllm-openai:v0.11.2
+      command:
+      - bash
+      - -c
+      - 'sleep infinity'
+      resources:
+        limits:
+          nvidia.com/gpu: 1 # requesting 2 vGPUs
+          # nvidia.com/gpumem: 3000 # 每个 GPU 包含 3000m 设备内存
+          # nvidia.com/gpumem-percentage: 50 # Each vGPU contains 50% device memory of that GPU （Optional,Integer）
+          # nvidia.com/gpucores: 50 # Each vGPU uses 30% of the entire GPU （Optional,Integer)
+          memory: "150Gi" # 请求的内存:q
+          rdma/hca_shared_devices_a: 1
+          cpu: "5" # 请求的 CPU
+        requests:
+          nvidia.com/gpu: 1 # requesting 2 vGPUs
+          # nvidia.com/gpumem: 3000 # 每个 GPU 包含 3000m 设备内存
+          memory: "5Gi" # 请求的内存
+          cpu: "500m" # 请求的 CPU
+          rdma/hca_shared_devices_a: 1
+      securityContext:
+        capabilities:
+          add:
+          - IPC_LOCK
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        - name: nfs-vol
+          mountPath: /models
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 80Gi
+    - name: nfs-vol
+      nfs:
+        server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+        path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+        readOnly: false
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-test-service
+spec:
+  type: NodePort
+  selector:
+    app: vllm-test  # 匹配 Pod 的标签
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 32180
+    name: sglang
+    protocol: TCP

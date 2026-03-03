@@ -1,0 +1,175 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        containers:
+          - name: vllm-leader
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: harbor.transwarp.io/aip/common/dlie-gpu:dev
+            env:
+              - name: USE_VLLM
+                value: "1"
+              - name: PORT
+                value: "8011"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: NCCL_DEBUG
+                value: INFO
+              - name: OMP_NUM_THREADS
+                value: "2"
+              - name: DISABLE_PP
+                value: "1"
+              - name: ENABLE_DP
+                value: "0"
+              - name: CUDA_DISABLE_CONTROL
+                value: "true"
+            command:
+              - bash
+              - -c
+              - "sleep 360000"
+            resources:
+              limits:
+                # nvidia.com/gpu: "2"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+                rdma/hca_shared_devices_a: 1
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            ports:
+              - containerPort: 8011
+            readinessProbe:
+              tcpSocket:
+                port: 8011
+              initialDelaySeconds: 15
+              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              # - name: boot-script
+              #   mountPath: /bin/boot.sh
+              #   # subPath: boot.sh
+              #   readOnly: true
+              # - name: executor-volume
+              #   mountPath: /opt/tritonserver/executor   
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk1/zty/repo/dlie/utils/boot.sh
+            type: File
+        - name: executor-volume
+          hostPath:
+            path: /mnt/disk1/zty/repo/dlie/utils/executor
+            type: Directory
+        
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev39
+        hostNetwork: true
+        dnsPolicy: ClusterFirstWithHostNet
+        containers:
+          - name: vllm-worker
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: harbor.transwarp.io/aip/common/dlie-gpu:dev
+            command:
+              - bash
+              - -c
+              - "sleep 36000"
+            env:
+              - name: USE_VLLM
+                value: "1"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: SLEEP_TIME
+                value: "1"
+              - name: ENABLE_DP
+                value: "0"
+              - name: CUDA_DISABLE_CONTROL
+                value: "true"
+            resources:
+              limits:
+                rdma/hca_shared_devices_a: 1
+                # nvidia.com/gpu: "2"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              # - name: boot-script
+              #   mountPath: /bin/boot.sh
+              #   # subPath: boot.sh
+              #   readOnly: true
+              # - name: executor-volume
+              #   mountPath: /opt/tritonserver/executor   
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 30Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk1/zty/repo/dlie/utils/boot.sh
+            type: File
+        - name: executor-volume
+          hostPath:
+            path: /mnt/disk1/zty/repo/dlie/utils/executor
+            type: Directory
+          
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-leader
+spec:
+  ports:
+    - name: http
+      port: 8011
+      protocol: TCP
+      targetPort: 8011
+  selector:
+    leaderworkerset.sigs.k8s.io/name: vllm
+    role: leader
+  type: ClusterIP

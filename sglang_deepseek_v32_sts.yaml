@@ -1,0 +1,182 @@
+# ==============================
+# Headless Service for StatefulSet master
+# ==============================
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-master-service
+spec:
+  clusterIP: None   # 关键：Headless Service，保证每个 Pod 都有 DNS 名称
+  selector:
+    app: distributed-sglang
+    role: master
+  ports:
+  - name: dist-port
+    port: 5000
+    targetPort: 5000
+  - name: zmq-port
+    port: 5001
+    targetPort: 5001
+---
+# ==============================
+# StatefulSet: sglang-master
+# ==============================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sglang-master
+spec:
+  serviceName: sglang-master-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: distributed-sglang
+      role: master
+  template:
+    metadata:
+      labels:
+        app: distributed-sglang
+        role: master
+    spec:
+      containers:
+      - name: sglang-container
+        securityContext:
+          capabilities:
+            add: ["IPC_LOCK"]
+        image: harbor.transwarp.io/aip/sglang:v0.5.4
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          python3 -m sglang.launch_server \
+            --model /models/DeepSeek-V3.2-Exp \
+            --dist-init-addr 0.0.0.0:5000 \
+            --tensor-parallel-size 16 \
+            --nnodes 2 \
+            --node-rank 0 \
+            --trust-remote-code \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --enable-metrics \
+            --expert-parallel-size 16 \
+            --dist-timeout 7200
+        env:
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: CUDA_DISABLE_CONTROL
+          value: "true"
+        resources:
+          limits:
+            rdma/hca_shared_devices_a: 1
+            nvidia.com/gpu: "8"
+            memory: 50Gi
+          requests:
+            nvidia.com/gpu: "8"
+            rdma/hca_shared_devices_a: 1
+            cpu: 5
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        - name: nfs-vol
+          mountPath: /models
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 30Gi
+      - name: nfs-vol
+        hostPath:
+          path: /mnt/disk2/models
+          type: Directory
+---
+# ==============================
+# Deployment: sglang-worker
+# ==============================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: distributed-sglang
+      role: worker
+  template:
+    metadata:
+      labels:
+        app: distributed-sglang
+        role: worker
+    spec:
+      containers:
+      - name: sglang-container
+        securityContext:
+          capabilities:
+            add: ["IPC_LOCK"]
+        image: harbor.transwarp.io/aip/sglang:v0.5.4
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          python3 -m sglang.launch_server \
+            --model /models/DeepSeek-V3.2-Exp \
+            --dist-init-addr sglang-master-0.sglang-master-service:5000 \
+            --tensor-parallel-size 16 \
+            --nnodes 2 \
+            --node-rank 1 \
+            --trust-remote-code \
+            --host 0.0.0.0 \
+            --port 8000 \
+            --enable-metrics \
+            --expert-parallel-size 16 \
+            --dist-timeout 7200
+        env:
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: CUDA_DISABLE_CONTROL
+          value: "true"
+        resources:
+          limits:
+            rdma/hca_shared_devices_a: 1
+            nvidia.com/gpu: "8"
+            memory: 50Gi
+          requests:
+            nvidia.com/gpu: "8"
+            rdma/hca_shared_devices_a: 1
+            cpu: 5
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        - name: nfs-vol
+          mountPath: /models
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 30Gi
+      - name: nfs-vol
+        hostPath:
+          path: /mnt/disk2/models
+          type: Directory
+---
+# ==============================
+# Service: external serving (on master)
+# ==============================
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-serving
+spec:
+  type: NodePort
+  selector:
+    app: distributed-sglang
+    role: master
+  ports:
+  - name: serving
+    port: 8000
+    targetPort: 8000
+  - name: metrics
+    port: 8080
+    targetPort: 8080

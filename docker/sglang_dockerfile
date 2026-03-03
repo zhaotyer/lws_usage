@@ -1,0 +1,3 @@
+FROM harbor.transwarp.io/aip/sglang:v0.4.7-cu124 
+RUN export https_proxy=http://172.16.80.252:3128 http_proxy=http://172.16.80.252:3128 && \
+    pip install mooncake-transfer-engine --break-system-packages -i https://mirrors.aliyun.com/pypi/simple/

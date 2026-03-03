@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dcu-test
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: dcunode
+  hostNetwork: true
+  containers:
+    - name: qwen2.5
+      image: harbor.transwarp.io/aip/common/dlie-gpu:dev
+      command:
+      - /bin/boot.sh
+      resources:
+        limits:
+          hygon.com/dcunum: 1 # requesting a GPU
+          memory: "150Gi" # 请求的内存:q
+          cpu: "5" # 请求的 CPU
+        requests:
+          hygon.com/dcunum: 1 # requesting a GPU
+          memory: "5Gi" # 请求的内存
+          cpu: "500m" # 请求的 CPU
+
+      volumeMounts:
+        - name: workspace-volume
+          mountPath: /models
+        - name: dshm
+          mountPath: /dev/shm
+  volumes:
+    - name: workspace-volume
+      hostPath:
+        path: /data02/models/Qwen2.5-7B-Instruct   # 请替换为你的本地目录，例如 /home/yourname/project
+        type: Directory
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 20Gi
+  restartPolicy: Never

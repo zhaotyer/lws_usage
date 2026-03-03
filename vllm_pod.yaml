@@ -1,0 +1,196 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+spec:
+  replicas: 1
+  # startupPolicy: LeaderReady
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: vllm-leader
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: harbor.transwarp.io/aip/vllm/vllm-openai:v0.11.2
+            env:
+              - name: USE_VLLM
+                value: "1"
+              - name: PORT
+                value: "8011"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: NCCL_DEBUG
+                value: INFO
+              # - name: OMP_NUM_THREADS
+              #   value: "2"
+              - name: DISABLE_PP
+                value: "1"
+              - name: ENABLE_DP
+                value: "1"
+              # - name: CUDA_DISABLE_CONTROL
+              #   value: "true"
+              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                value: "0"
+            command:
+              - bash
+              - -c
+              - /bin/boot.sh
+            resources:
+              limits:
+                nvidia.com/gpu: "2"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+                rdma/hca_shared_devices_a: 1
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 6
+            ports:
+              - containerPort: 8011
+            # readinessProbe:
+            #   tcpSocket:
+            #     port: 8011
+            #   initialDelaySeconds: 15
+            #   periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              - name: boot-script
+                mountPath: /bin/boot.sh
+                # subPath: boot.sh
+                readOnly: true
+              - name: build-cmd
+                mountPath: /vllm-workspace/build_cmd.py
+              - name: profile-file
+                mountPath: /vllm-workspace/model_gpu_profiler.py
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 80Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/boot.sh
+            type: File
+        - name: build-cmd
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/build_cmd.py
+            type: File
+        - name: profile-file
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/model_gpu_profiler.py
+            type: File
+        
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: dev32
+        containers:
+          - name: vllm-worker
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: harbor.transwarp.io/aip/vllm/vllm-openai:v0.11.2
+            command:
+              - bash
+              - -c
+              - /bin/boot.sh
+            env:
+              - name: USE_VLLM
+                value: "1"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: SLEEP_TIME
+                value: "1"
+              - name: NCCL_DEBUG
+                value: INFO
+              # - name: OMP_NUM_THREADS
+              #   value: "2"
+              - name: DISABLE_PP
+                value: "1"
+              - name: ENABLE_DP
+                value: "1"
+              # - name: CUDA_DISABLE_CONTROL
+              #   value: "true"
+              - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+                value: "0"
+            resources:
+              limits:
+                rdma/hca_shared_devices_a: 1
+                nvidia.com/gpu: "2"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 6
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              - name: boot-script
+                mountPath: /bin/boot.sh
+                # subPath: boot.sh
+                readOnly: true
+              - name: build-cmd
+                mountPath: /vllm-workspace/build_cmd.py
+              - name: profile-file
+                mountPath: /vllm-workspace/model_gpu_profiler.py
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 80Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: boot-script
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/boot.sh
+            type: File
+        - name: build-cmd
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/build_cmd.py
+            type: File
+        - name: profile-file
+          hostPath:
+            path: /mnt/disk1/zty/repo/llm_startup/model_gpu_profiler.py
+            type: File
+          
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-leader
+spec:
+  ports:
+    - name: http
+      port: 8011
+      protocol: TCP
+      targetPort: 8011
+      nodePort: 30811
+  selector:
+    leaderworkerset.sigs.k8s.io/name: vllm
+    role: leader
+  type: NodePort

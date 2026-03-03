@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-test
+  labels:
+    app: sglang-test
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: dev17
+  # hostNetwork: true
+  containers:
+    - name: sglang-test
+      image: harbor.transwarp.io/aip/sglang:glm5-hopper
+      command:
+      - bash
+      - -c
+      - 'sleep infinity'
+      resources:
+        limits:
+          nvidia.com/gpu: 1 # requesting 2 vGPUs
+          # nvidia.com/gpumem: 3000 # 每个 GPU 包含 3000m 设备内存
+          # nvidia.com/gpumem-percentage: 50 # Each vGPU contains 50% device memory of that GPU （Optional,Integer）
+          # nvidia.com/gpucores: 50 # Each vGPU uses 30% of the entire GPU （Optional,Integer)
+          memory: "150Gi" # 请求的内存:q
+          cpu: "5" # 请求的 CPU
+          rdma/hca_shared_devices_a: 1
+        requests:
+          nvidia.com/gpu: 1 # requesting 2 vGPUs
+          # nvidia.com/gpumem: 3000 # 每个 GPU 包含 3000m 设备内存
+          memory: "5Gi" # 请求的内存
+          cpu: "500m" # 请求的 CPU
+          rdma/hca_shared_devices_a: 1
+      env:
+        - name: MOONCAKE_MASTER
+          value: "mooncake-master:50051"
+        - name: MOONCAKE_TE_META_DATA_SERVER
+          value: "http://mooncake-master:8080/metadata"
+        - name: MOONCAKE_PROTOCOL
+          value: "rdma"
+        - name: MOONCAKE_DEVICE
+          value: ""
+        - name: MOONCAKE_OFFLOAD_CLIENT_BUFFER_GC_TTL_MS
+          value: "1000"    # 1秒后清理（默认5秒）
+        - name: MOONCAKE_OFFLOAD_CLIENT_BUFFER_GC_INTERVAL_SECONDS
+          value: "1"       # 每秒检查一次
+      securityContext:
+        capabilities:
+          add:
+          - IPC_LOCK
+      volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+        - name: nfs-vol
+          mountPath: /models
+        - name: nfs-cache
+          mountPath: /data/mooncache
+  volumes:
+    - name: dshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 80Gi
+    - name: nfs-vol
+      nfs:
+        server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+        path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+        readOnly: false
+    - name: nfs-cache
+      nfs:
+        server: 172.17.124.39       # ← 这里换成你的 NFS 服务器 IP
+        path: /mnt/disk2/models/kv_cache           # ← 这里换成你 NFS 上共享的目录
+        readOnly: false
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang-test-service
+spec:
+  type: NodePort
+  selector:
+    app: sglang-test  # 匹配 Pod 的标签
+  ports:
+  - port: 30000
+    targetPort: 30000
+    nodePort: 32185
+    name: sglang
+    protocol: TCP

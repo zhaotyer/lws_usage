@@ -1,0 +1,185 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: mindie
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: zzdev32
+        containers:
+          - name: mindie-leader
+            securityContext:
+              privileged: true   # to leverage RDMA/InfiniBand device, co-work with HostNetwork=true
+            hostNetwork: true
+            dnsPolicy: ClusterFirstWithHostNet
+            image: harbor.transwarp.io/aip-arm/common/mindie-npu:dev
+            env:
+              - name: USE_mindie
+                value: "1"
+              - name: PORT
+                value: "8080"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: NCCL_DEBUG
+                value: INFO
+            command:
+              - bash
+              - -c
+              - "/bin/boot.sh"
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+                rdma/hca_shared_devices_a: 1
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            ports:
+              - containerPort: 1025
+            readinessProbe:
+              tcpSocket:
+                port: 1025
+              initialDelaySeconds: 15
+              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+              - name: npu-smi
+                mountPath: /usr/local/sbin/npu-smi
+              - name: sbin-dir
+                mountPath: /usr/local/sbin
+              - name: hccn-conf
+                mountPath: /etc/hccn.conf
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: ascend-driver
+          hostPath:
+            path: /usr/local/Ascend/driver
+            type: Directory
+        - name: ascend-install-info
+          hostPath:
+            path: /etc/ascend_install.info
+            type: File
+        - name: npu-smi
+          hostPath:
+            path: /usr/local/sbin/npu-smi
+            type: File
+        - name: sbin-dir
+          hostPath:
+            path: /usr/local/sbin
+            type: Directory
+        - name: hccn-conf
+          hostPath:
+            path: /etc/hccn.conf
+            type: File
+        
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: zzdev39
+        containers:
+          - name: mindie-worker
+            securityContext:
+              privileged: true   # to leverage RDMA/InfiniBand device, co-work with HostNetwork=true
+            hostNetwork: true
+            dnsPolicy: ClusterFirstWithHostNet
+            image: harbor.transwarp.io/aip-arm/common/mindie-npu:dev
+            command:
+              - bash
+              - -c
+              - "/bin/boot.sh"
+            resources:
+              limits:
+                rdma/hca_shared_devices_a: 1
+                nvidia.com/gpu: "1"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models   
+              - name: ascend-driver
+                mountPath: /usr/local/Ascend/driver
+              - name: ascend-install-info
+                mountPath: /etc/ascend_install.info
+              - name: npu-smi
+                mountPath: /usr/local/sbin/npu-smi
+              - name: sbin-dir
+                mountPath: /usr/local/sbin
+              - name: hccn-conf
+                mountPath: /etc/hccn.conf
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 30Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        - name: ascend-driver
+          hostPath:
+            path: /usr/local/Ascend/driver
+            type: Directory
+        - name: ascend-install-info
+          hostPath:
+            path: /etc/ascend_install.info
+            type: File
+        - name: npu-smi
+          hostPath:
+            path: /usr/local/sbin/npu-smi
+            type: File
+        - name: sbin-dir
+          hostPath:
+            path: /usr/local/sbin
+            type: Directory
+        - name: hccn-conf
+          hostPath:
+            path: /etc/hccn.conf
+            type: File
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mindie-leader
+spec:
+  ports:
+    - name: http
+      port: 1025
+      protocol: TCP
+      targetPort: 1025 
+  selector:
+    leaderworkerset.sigs.k8s.io/name: mindie
+    role: leader
+  type: ClusterIP

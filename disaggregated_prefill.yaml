@@ -1,0 +1,124 @@
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: vllm
+spec:
+  replicas: 1
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: zzdev32
+        containers:
+          - name: vllm-leader
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: 172.17.124.17:5000/aip/common/dlie-gpu:dev
+            env:
+              - name: USE_VLLM
+                value: "1"
+              - name: PORT
+                value: "8080"
+              - name: BASE_MODEL
+                value: /models/Qwen/Qwen3-30B-A3B
+              - name: NCCL_DEBUG
+                value: INFO
+            command:
+              - sh
+              - -c
+              - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); 
+                 /bin/boot.sh"
+            resources:
+              limits:
+                nvidia.com/gpu: "1"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+                rdma/hca_shared_devices_a: 1
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            ports:
+              - containerPort: 8080
+            readinessProbe:
+              tcpSocket:
+                port: 8080
+              initialDelaySeconds: 15
+              periodSeconds: 10
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models
+              
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 50Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+        
+    workerTemplate:
+      spec:
+        nodeSelector:
+          kubernetes.io/hostname: zzdev39
+        containers:
+          - name: vllm-worker
+            securityContext:
+              capabilities:
+                add: ["IPC_LOCK"]
+            image: 172.17.124.17:5000/aip/common/dlie-gpu:dev
+            command:
+              - sh
+              - -c
+              - "bash /vllm-workspace/examples/online_serving/multi-node-serving.sh worker --ray_address=$(LWS_LEADER_ADDRESS)"
+            resources:
+              limits:
+                rdma/hca_shared_devices_a: 1
+                nvidia.com/gpu: "1"
+                memory: 50Gi
+                ephemeral-storage: 50Gi
+              requests:
+                rdma/hca_shared_devices_a: 1
+                ephemeral-storage: 50Gi
+                cpu: 4
+            volumeMounts:
+              - mountPath: /dev/shm
+                name: dshm
+              - name: nfs-vol
+                mountPath: /models   
+        volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 30Gi
+        - name: nfs-vol
+          nfs:
+            server: 172.17.124.32       # ← 这里换成你的 NFS 服务器 IP
+            path: /mnt/disk1/zty/models           # ← 这里换成你 NFS 上共享的目录
+            readOnly: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-leader
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    leaderworkerset.sigs.k8s.io/name: vllm
+    role: leader
+  type: ClusterIP
